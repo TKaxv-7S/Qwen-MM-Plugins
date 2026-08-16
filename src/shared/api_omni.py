@@ -37,6 +37,15 @@ DEFAULT_MAX_RETRIES = 4
 DEFAULT_RETRY_BACKOFF = 1.0
 DEFAULT_OMNI_TIMEOUT = 1800  # streaming A/V completions can run long; overridable via QWEN_MM_CHAT_TIMEOUT
 
+
+def resolve_omni_model(model: str | None = None) -> str:
+    """Resolve the Omni model at call time.
+
+    Precedence: explicit argument → QWEN_MM_API_OMNI_MODEL → DEFAULT_OMNI_MODEL.
+    """
+    return model or get_env("QWEN_MM_API_OMNI_MODEL") or DEFAULT_OMNI_MODEL
+
+
 # Default video sampling knobs (must sit at the content-part TOP level to take effect — see
 # omni_video_part). 200704 px ≈ 448², matching the reference omni client.
 DEFAULT_OMNI_FPS = 1.0
@@ -115,12 +124,8 @@ def b64_len(n_bytes: int) -> int:
     return 4 * ((n_bytes + 2) // 3)
 
 
-def _data_url(source: str, default_mime: str, *, omit_mime: bool = False) -> str:
-    """Base64 ``data:`` URL for a local file, refusing one that cannot fit the endpoint's cap.
-
-    ``omit_mime`` emits the bare ``data:;base64,`` form the DashScope docs use for ``input_audio``,
-    where the media type is carried by the part's own ``format`` field instead.
-    """
+def _local_b64(source: str) -> tuple[Path, str]:
+    """Read and base64-encode a local file, refusing one that cannot fit the endpoint's cap."""
     path = Path(source)
     raw = path.read_bytes()
     encoded_len = b64_len(len(raw))
@@ -130,9 +135,19 @@ def _data_url(source: str, default_mime: str, *, omit_mime: bool = False) -> str
             f"over the {OMNI_MAX_B64_BYTES / 1e6:.0f} MB cap the endpoint applies to an inline media "
             "item. Transcode it smaller, pass an http(s) URL, or configure OSS_* so it can be uploaded."
         )
+    return path, base64.b64encode(raw).decode("ascii")
+
+
+def _data_url(source: str, default_mime: str, *, omit_mime: bool = False) -> str:
+    """Base64 ``data:`` URL for a local file, refusing one that cannot fit the endpoint's cap.
+
+    ``omit_mime`` emits the bare ``data:;base64,`` form the DashScope docs use for ``input_audio``,
+    where the media type is carried by the part's own ``format`` field instead.
+    """
+    path, encoded = _local_b64(source)
     mime, _ = mimetypes.guess_type(path.name)
     prefix = "" if omit_mime else (mime or default_mime)
-    return f"data:{prefix};base64,{base64.b64encode(raw).decode('ascii')}"
+    return f"data:{prefix};base64,{encoded}"
 
 
 def omni_video_part(source: str, *, fps: float = DEFAULT_OMNI_FPS, max_pixels: int = DEFAULT_OMNI_MAX_PIXELS) -> dict:
@@ -169,9 +184,19 @@ def omni_audio_part(source: str, *, audio_format: str | None = None) -> dict:
 
     A local file becomes the bare ``data:;base64,…`` form the DashScope docs show for audio (the type
     is carried by ``format``, not a mime prefix).
+
+    That wrapper is DashScope-specific: OpenAI's spec — and vLLM, which implements it — expects
+    ``data`` to be RAW base64. Against a self-hosted server the wrapped form fails base64 decoding
+    ("Incorrect padding"), so ``QWEN_MM_AUDIO_RAW_B64=1`` sends the encoded bytes directly. Both
+    forms go through the same local-file size guard.
     """
     fmt = (audio_format or Path(source).suffix.lstrip(".") or "wav").lower()
-    data = source if is_url(source) else _data_url(source, "audio/wav", omit_mime=True)
+    if is_url(source):
+        data = source
+    elif (get_env("QWEN_MM_AUDIO_RAW_B64") or "").lower() in ("1", "true", "yes", "on"):
+        _, data = _local_b64(source)
+    else:
+        data = _data_url(source, "audio/wav", omit_mime=True)
     return {"type": "input_audio", "input_audio": {"data": data, "format": fmt}}
 
 
@@ -223,7 +248,7 @@ def call_omni(
     *,
     base_url: str,
     api_key: str,
-    model: str = DEFAULT_OMNI_MODEL,
+    model: str | None = None,
     messages: list[dict[str, Any]],
     max_tokens: int = 65536,
     temperature: float = 0.7,
@@ -232,6 +257,7 @@ def call_omni(
 ) -> tuple[str, Any]:
     """Call the Omni model (streaming) and return ``(text, usage)``.
 
+    An omitted ``model`` resolves from QWEN_MM_API_OMNI_MODEL, then DEFAULT_OMNI_MODEL.
     Enforces the required ``stream=True`` + ``modalities=["text"]`` + ``stream_options`` protocol,
     accumulates the streamed text deltas, and retries transient failures (typed openai errors,
     retryable HTTP statuses, and an empty completion) via ``shared.retry.retry_call``.
@@ -244,6 +270,8 @@ def call_omni(
     from openai import OpenAI
 
     from shared.retry import retry_call
+
+    model = resolve_omni_model(model)
 
     if api_key in ("", "EMPTY") and "dashscope" in base_url:
         raise RuntimeError("no API key — set DASHSCOPE_API_KEY (or pass api_key)")
@@ -352,13 +380,14 @@ def call_omni_json(
     *,
     base_url: str,
     api_key: str,
-    model: str = DEFAULT_OMNI_MODEL,
+    model: str | None = None,
     messages: list[dict[str, Any]],
     max_tokens: int = 4096,
     temperature: float = 0.3,
     max_retries: int = DEFAULT_MAX_RETRIES,
 ) -> Any:
-    """``call_omni`` + robust JSON parse, with ONE LLM-repair round if the first reply won't parse."""
+    """``call_omni`` + robust JSON parse, sharing its model resolution across any repair call."""
+    model = resolve_omni_model(model)
     text, _ = call_omni(
         base_url=base_url,
         api_key=api_key,

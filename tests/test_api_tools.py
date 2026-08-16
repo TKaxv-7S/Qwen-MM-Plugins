@@ -4,10 +4,10 @@ Understanding tools live in the qwen-mm-plugins-api capability, grouped by model
 (qwen_mm_plugins_api.vl: vision_chat / ocr / grounding; qwen_mm_plugins_api.others: segmentation /
 asr — the Omni family in qwen_mm_plugins_api.omni is covered by test_api_omni.py); web +
 reverse-image search lives in qwen-mm-plugins-search (qwen_mm_plugins_search.tools +
-its serper client). These tools normally hit an external endpoint (DashScope
-OpenAI-compatible, Serper, a SAM3 server). The handlers all import their network boundary
+its pluggable backends). These tools normally hit an external endpoint (DashScope
+OpenAI-compatible, Serper/Exa/Tavily, a SAM3 server). The handlers all import their network boundary
 lazily *inside* `handle`, so — exactly like test_api_clients.py — monkeypatching the module
-attribute (`call_openai_chat`, `serper.post_serper`, `requests.post`) is enough to exercise
+attribute (`call_openai_chat`, `backends.search_text`, `serper.post_serper`, `requests.post`) is enough to exercise
 the handler with NO live network and NO API key. Nothing here should ever touch the wire.
 
 Split into three layers:
@@ -39,6 +39,7 @@ from qwen_mm_plugins_api.vl import (  # noqa: E402
     ocr,
     vision_chat,
 )
+from qwen_mm_plugins_search import backends as search_backends  # noqa: E402
 from qwen_mm_plugins_search import serper  # noqa: E402
 from qwen_mm_plugins_search.tools import (  # noqa: E402
     image_search,
@@ -51,10 +52,22 @@ def _is_error(blocks) -> bool:
     return bool(blocks) and blocks[0].get("type") == "text" and blocks[0]["text"].startswith("Error:")
 
 
+@pytest.mark.parametrize("module", [vision_chat, ocr, grounding])
+def test_vl_model_schema_documents_env_override(module):
+    description = module.TOOL["args"].model_fields["model"].description
+    assert "QWEN_MM_API_VL_MODEL" in description
+
+
 def _chat_response(content: str):
     """Mimic the OpenAI SDK response shape the handlers read: resp.choices[0].message.content."""
     message = types.SimpleNamespace(content=content)
     return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+
+@pytest.fixture(autouse=True)
+def _default_search_backend(monkeypatch):
+    """Keep handler tests independent of a developer's persisted backend selection."""
+    monkeypatch.setattr(search_backends, "resolve_backend", lambda: "serper")
 
 
 class _FakeHTTPResponse:
@@ -193,14 +206,20 @@ def test_web_extractor_empty_urls_guard():
 
 
 def test_web_search_missing_key_guard(monkeypatch):
-    monkeypatch.setattr(serper, "resolve_serper_key", lambda a: "")
+    monkeypatch.setattr(search_backends, "resolve_api_key", lambda *_a: "")
     blocks = web_search.handle({"queries": ["hello"]})
     assert _is_error(blocks) and "API key" in blocks[0]["text"]
 
 
 def test_image_search_missing_key_guard(monkeypatch):
+    monkeypatch.setattr(
+        search_backends,
+        "resolve_backend",
+        lambda: pytest.fail("image_search must not consult the text-search backend"),
+    )
     monkeypatch.setattr(serper, "resolve_serper_key", lambda a: "")
-    assert _is_error(image_search.handle({"image_path": "/nope.jpg"}))
+    blocks = image_search.handle({"image_path": "/nope.jpg"})
+    assert _is_error(blocks) and "SERPER_API_KEY" in blocks[0]["text"]
 
 
 def test_segmentation_missing_server_guard(monkeypatch):
@@ -234,6 +253,14 @@ def test_vision_chat_dry_run_builds_request_without_network(sample_image):
     img_part = content[0]
     assert img_part["type"] == "image_url"
     assert img_part["image_url"]["url"].startswith("<base64 image")
+
+
+def test_vision_chat_model_precedence(monkeypatch):
+    monkeypatch.setenv("QWEN_MM_API_VL_MODEL", "env-vl")
+    env_payload = json.loads(vision_chat.handle({"dry_run": True})[0]["text"])
+    explicit_payload = json.loads(vision_chat.handle({"model": "explicit-vl", "dry_run": True})[0]["text"])
+    assert env_payload["request"]["model"] == "env-vl"
+    assert explicit_payload["request"]["model"] == "explicit-vl"
 
 
 def test_encode_video_source_uploads_to_oss_when_configured(monkeypatch):
@@ -359,7 +386,7 @@ def test_grounding_maps_boxes_and_draws(monkeypatch, sample_image):
 
 
 def test_web_search_formats_serper_docs(monkeypatch):
-    monkeypatch.setattr(serper, "resolve_serper_key", lambda a: "k")
+    monkeypatch.setattr(search_backends, "resolve_api_key", lambda *_a: "k")
     monkeypatch.setattr(
         serper,
         "post_serper",
@@ -371,7 +398,7 @@ def test_web_search_formats_serper_docs(monkeypatch):
 
 
 def test_web_search_multi_query_headers_and_numbering(monkeypatch):
-    monkeypatch.setattr(serper, "resolve_serper_key", lambda a: "k")
+    monkeypatch.setattr(search_backends, "resolve_api_key", lambda *_a: "k")
     seq = iter(
         [
             {"organic": [{"link": "http://a", "title": "A"}]},
@@ -385,13 +412,34 @@ def test_web_search_multi_query_headers_and_numbering(monkeypatch):
 
 
 def test_web_extractor_truncates_and_labels_goal(monkeypatch):
-    monkeypatch.setattr(serper, "resolve_serper_key", lambda a: "k")
+    monkeypatch.setattr(search_backends, "resolve_api_key", lambda *_a: "k")
     monkeypatch.setattr(serper, "post_serper", lambda *a, **k: {"markdown": "M" * 20_000})
     blocks = web_extractor.handle({"urls": ["http://p"], "goal": "find X"})
     text = blocks[0]["text"]
     assert "## http://p" in text and "Goal: find X" in text
     body = text.split("\n\n", 2)[-1]
     assert len(body) <= web_extractor.CONTENT_LIMIT
+
+
+def test_image_search_ignores_text_backend_and_uses_serper(monkeypatch):
+    monkeypatch.setattr(
+        search_backends,
+        "resolve_backend",
+        lambda: pytest.fail("image_search must not consult the text-search backend"),
+    )
+    monkeypatch.setattr(serper, "resolve_serper_key", lambda _a: "serper-key")
+    monkeypatch.setattr(
+        serper,
+        "post_serper",
+        lambda *_a, **_k: {
+            "organic": [{"title": "match", "link": "https://example.com/match", "imageUrl": "https://img"}]
+        },
+    )
+
+    blocks = image_search.handle({"image_path": "https://example.com/source.jpg"})
+
+    assert not _is_error(blocks)
+    assert "https://example.com/match" in blocks[0]["text"]
 
 
 def test_image_search_url_fast_path(monkeypatch):
