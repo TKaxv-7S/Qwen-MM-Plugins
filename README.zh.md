@@ -10,11 +10,11 @@
 
 ## 安装
 
-引导式安装器支持 Claude Code、Codex、Qoder、OpenClaw、Qwen Code 和 Gemini CLI。它调用各
-harness 的原生安装命令，并通过 `~/.qwen-mm-plugins/config` 共享配置。
+引导式安装器支持 Claude Code、CodeBuddy、Codex、Qoder、OpenClaw、Qwen Code 和 Gemini CLI。
+共享配置位于 `~/.qwen-mm-plugins/config`。
 
-DeepSeek Harness、Hermes Agent、opencode、pi 和 QwenPaw 可参考
-[手动配置其他 Harness](docs/zh/manual_harnesses.md)。
+WorkBuddy、QoderWork 与 QwenWork 的应用内安装，以及 DeepSeek Harness、Hermes Agent、
+opencode、pi 和 QwenPaw 的手动安装方式见[其他 Harness 安装](docs/zh/manual_harnesses.md)。
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/QwenLM/Qwen-MM-Plugins/main/install.sh | bash
@@ -61,7 +61,8 @@ curl -fsSL https://raw.githubusercontent.com/QwenLM/Qwen-MM-Plugins/main/install
 ## 依赖与配置
 
 - [`uv`](https://docs.astral.sh/uv/) 提供 `uvx`，按需安装 Python 依赖。
-- 本地 `core` 工具无需 API key；云端和搜索能力需要对应服务的凭证。
+- 本地 `core` 工具在默认原生图片模式下无需 API key；纯文本图片描述 fallback、云端和搜索能力
+  需要对应服务的凭证。
 - 视频、文档、浏览器、Blender 和 FreeCAD 工作流可能需要系统程序。
 
 通过安装器的 **Configure** 和 **Verify** 操作设置凭证并检查依赖。系统要求见

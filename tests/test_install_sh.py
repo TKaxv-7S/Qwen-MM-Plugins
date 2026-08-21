@@ -47,6 +47,7 @@ def test_config_spec_lists_api_model_defaults():
     rows = result.stdout.splitlines()
     assert any(row.startswith("QWEN_MM_API_VL_MODEL|0|services|qwen3.7-plus|") for row in rows)
     assert any(row.startswith("QWEN_MM_API_OMNI_MODEL|0|services|qwen3.5-omni-plus|") for row in rows)
+    assert any(row.startswith("QWEN_MM_NATIVE_MODE|0|runtime|1|") for row in rows)
 
 
 def test_config_spec_mirrors_shared_catalog():
@@ -334,6 +335,7 @@ do_verify
     ("harness", "expected"),
     [
         ("claude", "claude plugin install qwen-mm-plugins-core@qwen-mm-plugins"),
+        ("codebuddy", "codebuddy plugin install qwen-mm-plugins-core@qwen-mm-plugins"),
         ("codex", "codex plugin add qwen-mm-plugins-core@qwen-mm-plugins"),
         ("qoder", "qodercli plugins install qwen-mm-plugins-core@qwen-mm-plugins"),
         ("openclaw", "openclaw plugins install qwen-mm-plugins-core --marketplace"),
@@ -353,6 +355,61 @@ def test_local_install_uses_each_harness_native_command(tmp_path, harness, expec
     assert str(checkout) in result.stdout
 
 
+def test_harness_catalog_includes_codebuddy_but_not_ui_only_desktop_apps():
+    result = _bash('printf "%s\n%s\n" "$MP_HARNESSES" "$CFG_HARNESSES"')
+    assert result.returncode == 0, result.stderr
+    marketplace, config = result.stdout.splitlines()
+    assert "codebuddy" in marketplace.split()
+    for desktop_app in ("workbuddy", "qoderwork", "qwenwork"):
+        assert desktop_app not in marketplace.split()
+        assert desktop_app not in config.split()
+
+
+def test_codebuddy_rejects_broken_marketplace_ref_urls():
+    result = _bash("REPO_REF=qwen-mm-plugins-core-v1.0.1; install_for codebuddy qwen-mm-plugins-core")
+    assert result.returncode == 1
+    assert "tested codebuddy client cannot install Git marketplace #ref URLs reliably" in result.stdout
+
+
+def test_codebuddy_marketplace_parser_distinguishes_local_and_remote():
+    local_listing = """[
+  {
+    "name": "qwen-mm-plugins",
+    "type": "directory",
+    "description": "Marketplace from /tmp/checkout with spaces"
+  }
+]"""
+    remote_listing = """[
+  {
+    "name": "qwen-mm-plugins",
+    "type": "git",
+    "description": "Marketplace from https://example.test/repo.git"
+  }
+]"""
+    result = _bash(
+        'printf "%s\n" "$LOCAL_LISTING" | codebuddy_marketplace_root_from_list qwen-mm-plugins; '
+        'printf "%s\n" "$REMOTE_LISTING" | codebuddy_marketplace_root_from_list qwen-mm-plugins',
+        LOCAL_LISTING=local_listing,
+        REMOTE_LISTING=remote_listing,
+    )
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["/tmp/checkout with spaces", "remote"]
+
+
+def test_codebuddy_install_checks_inventory_when_cli_falsely_returns_zero(tmp_path):
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    cli = fake_bin / "codebuddy"
+    cli.write_text("#!/usr/bin/env bash\nexit 0\n")
+    cli.chmod(0o755)
+    result = _bash(
+        "confirm() { return 0; }; install_for codebuddy qwen-mm-plugins-core",
+        PATH=f"{fake_bin}:{os.environ['PATH']}",
+    )
+    assert result.returncode == 1
+    assert "CodeBuddy did not install qwen-mm-plugins-core@qwen-mm-plugins" in result.stdout
+
+
 @pytest.mark.parametrize(
     ("harness", "expected"),
     [
@@ -361,6 +418,13 @@ def test_local_install_uses_each_harness_native_command(tmp_path, harness, expec
             (
                 "claude plugin marketplace update qwen-mm-plugins",
                 "claude plugin update qwen-mm-plugins-core@qwen-mm-plugins",
+            ),
+        ),
+        (
+            "codebuddy",
+            (
+                "codebuddy plugin marketplace update qwen-mm-plugins",
+                "codebuddy plugin update qwen-mm-plugins-core@qwen-mm-plugins",
             ),
         ),
         (
@@ -384,14 +448,14 @@ def test_local_install_uses_each_harness_native_command(tmp_path, harness, expec
                 "git ls-remote --exit-code",
                 "qwen extensions uninstall qwen-mm-plugins-core",
                 "qwen extensions install",
-                "--ref=qwen-mm-plugins-core-v1.0.2",
+                "--ref=qwen-mm-plugins-core-v1.0.4",
             ),
         ),
         (
             "gemini",
             (
                 "gemini mcp add -s user qwen-mm-plugins-core uvx --from",
-                "fetch --depth 1 origin qwen-mm-plugins-core-v1.0.2",
+                "fetch --depth 1 origin qwen-mm-plugins-core-v1.0.4",
                 "gemini skills install",
             ),
         ),
@@ -426,7 +490,7 @@ def test_qwen_update_restores_previous_ref_when_new_install_fails(tmp_path):
 confirm() { return 0; }
 run_cmd() {
   printf '$ %s\n' "$*"
-  case "$*" in *--ref=qwen-mm-plugins-core-v1.0.2*) return 1 ;; *) return 0 ;; esac
+  case "$*" in *--ref=qwen-mm-plugins-core-v1.0.4*) return 1 ;; *) return 0 ;; esac
 }
 update_for qwen-code qwen-mm-plugins-core
 test "$?" -eq 1
@@ -440,7 +504,7 @@ test "$?" -eq 1
 def test_cap_spec_defaults_to_capability_stable_tag():
     result = _bash("REPO_REF=; cap_spec search")
     assert result.returncode == 0, result.stderr
-    assert result.stdout.endswith("@qwen-mm-plugins-search-v1.0.3")
+    assert result.stdout.endswith("@qwen-mm-plugins-search-v1.0.4")
 
 
 def test_explicit_ref_overrides_package_and_marketplace():
@@ -456,7 +520,7 @@ def test_explicit_ref_overrides_package_and_marketplace():
 def test_gemini_skill_checkout_uses_same_stable_tag():
     result = _bash("QMP_DRY=1; REPO_REF=; install_gemini_skill gemini search")
     assert result.returncode == 0, result.stderr
-    assert "fetch --depth 1 origin qwen-mm-plugins-search-v1.0.3" in result.stdout
+    assert "fetch --depth 1 origin qwen-mm-plugins-search-v1.0.4" in result.stdout
     assert "--path src/capabilities/search/skill" in result.stdout
 
 
@@ -464,6 +528,7 @@ def test_gemini_skill_checkout_uses_same_stable_tag():
     ("harness", "expected"),
     [
         ("claude", "/reload-plugins"),
+        ("codebuddy", "/reload-plugins"),
         ("codex", "start a new task"),
         ("qoder", "/plugins reload"),
         ("openclaw", "openclaw gateway restart"),
@@ -480,7 +545,7 @@ def test_post_update_hint_explains_how_to_activate_updated_components(harness, e
 def test_manual_update_prints_same_tag_for_skill_and_mcp_without_claiming_detection():
     result = _bash("show_manual update qwen-mm-plugins-search")
     assert result.returncode == 0, result.stderr
-    tag = "qwen-mm-plugins-search-v1.0.3"
+    tag = "qwen-mm-plugins-search-v1.0.4"
     repo = "https://github.com/QwenLM/Qwen-MM-Plugins.git"
     assert f"/tree/{tag}/src/capabilities/search/skill" in result.stdout
     assert f"qwen-mm-plugins[search] @ git+{repo}@{tag}" in result.stdout
