@@ -448,14 +448,14 @@ def test_codebuddy_install_checks_inventory_when_cli_falsely_returns_zero(tmp_pa
                 "git ls-remote --exit-code",
                 "qwen extensions uninstall qwen-mm-plugins-core",
                 "qwen extensions install",
-                "--ref=qwen-mm-plugins-core-v1.0.4",
+                "--ref=qwen-mm-plugins-core-v1.0.5",
             ),
         ),
         (
             "gemini",
             (
                 "gemini mcp add -s user qwen-mm-plugins-core uvx --from",
-                "fetch --depth 1 origin qwen-mm-plugins-core-v1.0.4",
+                "fetch --depth 1 origin qwen-mm-plugins-core-v1.0.5",
                 "gemini skills install",
             ),
         ),
@@ -490,7 +490,7 @@ def test_qwen_update_restores_previous_ref_when_new_install_fails(tmp_path):
 confirm() { return 0; }
 run_cmd() {
   printf '$ %s\n' "$*"
-  case "$*" in *--ref=qwen-mm-plugins-core-v1.0.4*) return 1 ;; *) return 0 ;; esac
+  case "$*" in *--ref=qwen-mm-plugins-core-v1.0.5*) return 1 ;; *) return 0 ;; esac
 }
 update_for qwen-code qwen-mm-plugins-core
 test "$?" -eq 1
