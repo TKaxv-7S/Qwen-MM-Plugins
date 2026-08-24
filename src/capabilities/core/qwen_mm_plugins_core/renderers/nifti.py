@@ -80,7 +80,12 @@ def _to_grayscale_image(values):
     return Image.fromarray(pixels)
 
 
-def _metadata_text(image, source_orientation: str, display_orientation: str) -> str:
+def _metadata_text(
+    image,
+    source_orientation: str,
+    display_orientation: str,
+    volume_indices: list[int] | None = None,
+) -> str:
     import numpy as np
 
     shape = tuple(int(size) for size in image.shape)
@@ -98,8 +103,13 @@ def _metadata_text(image, source_orientation: str, display_orientation: str) -> 
         f"- Voxel spacing: {spacing} mm",
         f"- Orientation (closest axis codes): display {display_orientation}; source {source_orientation}",
     ]
-    if image.ndim == 4:
-        lines.append(f"- Volume index: 0 (of {shape[3]})")
+    if volume_indices:
+        pages = tuple(index + 1 for index in volume_indices)
+        indices = tuple(volume_indices)
+        if len(volume_indices) == 1:
+            lines.append(f"- Selected volume: page {pages[0]} / index {indices[0]} (of {shape[3]})")
+        else:
+            lines.append(f"- Selected volumes: pages {pages}; indices {indices} (of {shape[3]})")
     lines.extend(
         (
             "- Display: axial, coronal, and sagittal center voxel planes (no resampling)",
@@ -116,7 +126,7 @@ def render(path: str, **opts: Any) -> list[dict[str, Any]]:
     except ImportError:
         raise RuntimeError('Missing dependency — install with: pip install "qwen-mm-plugins[viz]"')
 
-    from qwen_mm_plugins_core.renderers import labeled_image
+    from qwen_mm_plugins_core.renderers import DEFAULT_MAX_PAGES, labeled_image, parse_pages
 
     source = nib.load(path)
     if source.ndim not in (3, 4):
@@ -127,7 +137,13 @@ def render(path: str, **opts: Any) -> list[dict[str, Any]]:
     orientation, source_orientation, display_orientation = _orientation_info(source, nib)
     display_shape = _canonical_shape(source.shape, orientation)
     x_center, y_center, z_center = (size // 2 for size in display_shape)
-    volume_index = 0 if source.ndim == 4 else None
+    if source.ndim == 4:
+        pages = opts.get("pages")
+        volume_indices: list[int | None] = (
+            parse_pages(pages, int(source.shape[3]))[: opts.get("max_pages", DEFAULT_MAX_PAGES)] if pages else [0]
+        )
+    else:
+        volume_indices = [None]
     planes = (
         ("Axial", 2, z_center, f"z={z_center}"),
         ("Coronal", 1, y_center, f"y={y_center}"),
@@ -137,19 +153,32 @@ def render(path: str, **opts: Any) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = [
         {
             "type": "text",
-            "text": _metadata_text(source, source_orientation, display_orientation),
+            "text": _metadata_text(
+                source,
+                source_orientation,
+                display_orientation,
+                [index for index in volume_indices if index is not None],
+            ),
         }
     ]
     budget = opts.get("budget", "large")
-    for plane, canonical_axis, index, index_label in planes:
-        values = _read_canonical_plane(
-            source.dataobj,
-            source.shape,
-            orientation,
-            canonical_axis,
-            index,
-            volume_index,
-        )
-        image = _to_grayscale_image(values)
-        result.extend(labeled_image(f"{plane} center slice ({index_label})", image, budget))
+    for volume_index in volume_indices:
+        if volume_index is not None:
+            result.append(
+                {
+                    "type": "text",
+                    "text": f"**Volume page {volume_index + 1} / index {volume_index}**",
+                }
+            )
+        for plane, canonical_axis, index, index_label in planes:
+            values = _read_canonical_plane(
+                source.dataobj,
+                source.shape,
+                orientation,
+                canonical_axis,
+                index,
+                volume_index,
+            )
+            image = _to_grayscale_image(values)
+            result.extend(labeled_image(f"{plane} center slice ({index_label})", image, budget))
     return result

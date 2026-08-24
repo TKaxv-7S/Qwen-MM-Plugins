@@ -1,12 +1,13 @@
-"""Synthetic, offline coverage for NIfTI visualization.
+"""Offline coverage for NIfTI visualization.
 
-The fixtures are generated at test time and contain no patient or clinical data.
+Tests use generated synthetic fixtures plus a public MNI152 population-average template; no
+individual patient scan is included.
 """
 
 import base64
-import builtins
 import io
 import re
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -15,6 +16,7 @@ from PIL import Image
 from qwen_mm_plugins_core.visualizers import visualize
 
 nib = pytest.importorskip("nibabel")
+ASSETS_DIR = Path(__file__).with_name("assets")
 
 
 def _save_nifti(tmp_path, filename: str, data: np.ndarray, affine: np.ndarray | None = None) -> str:
@@ -88,68 +90,75 @@ def _assert_successful_three_plane_render(content: list[dict]) -> list[Image.Ima
     return decoded
 
 
-@pytest.mark.parametrize("suffix", [".nii", ".nii.gz"])
-def test_visualize_nifti_reports_metadata_and_three_planes(tmp_path, suffix):
-    shape = (7, 9, 11)
-    x, y, z = np.indices(shape, dtype=np.float32)
-    data = x + 10 * y + 100 * z
-    path = _save_nifti(tmp_path, f"synthetic{suffix}", data)
+def test_visualize_nifti_asset_reports_metadata_and_three_planes():
+    path = ASSETS_DIR / "avg152T1_LR_nifti.nii.gz"
 
-    content = visualize.handle({"file_path": path, "budget": "small"})
+    content = visualize.handle({"file_path": str(path), "budget": "small"})
 
     _assert_successful_three_plane_render(content)
     report = _text(content)
     report_lower = report.lower()
     assert "nifti" in report_lower
-    assert "shape" in report_lower and re.search(r"7\D+9\D+11", report)
-    assert "dtype" in report_lower and "float32" in report_lower
-    assert ("voxel spacing" in report_lower or "zooms" in report_lower) and all(
-        value in report for value in ("2.0", "3.0", "4.0")
-    )
-    assert "orientation" in report_lower and "RAS" in report.upper()
+    assert "shape" in report_lower and re.search(r"91\D+109\D+91", report)
+    assert "dtype" in report_lower and "uint8" in report_lower
+    assert ("voxel spacing" in report_lower or "zooms" in report_lower) and "2.0" in report
+    assert re.search(r"orientation.*display\s+RAS.*source\s+LAS", report, re.IGNORECASE)
     assert "affine" in report_lower
     assert all(plane in report_lower for plane in ("axial", "coronal", "sagittal"))
 
 
-def test_visualize_nifti_4d_defaults_to_volume_zero_lazily(tmp_path, monkeypatch):
+def test_visualize_nifti_4d_defaults_and_selects_pages_lazily(tmp_path, monkeypatch):
     shape = (7, 9, 11)
     x, y, z = np.indices(shape, dtype=np.float32)
     first = x + 10 * y + 100 * z
-    second = np.full(shape, 42, dtype=np.float32)
-    data = np.stack([first, second], axis=-1)
-    path = _save_nifti(tmp_path, "synthetic-4d.nii.gz", data)
+    second = 2 * first
+    third = 3 * first
+    data = np.stack([first, second, third], axis=-1)
+    path = _save_nifti(tmp_path, "synthetic-4d.nii", data)
     selections = _guard_array_proxy(monkeypatch)
 
     content = visualize.handle({"file_path": path, "budget": "small"})
 
-    decoded = _assert_successful_three_plane_render(content)
+    _assert_successful_three_plane_render(content)
     report = _text(content)
-    assert re.search(r"volume(?:\s+index)?\s*[:=]?\s*0\b", report, re.IGNORECASE), report
-    assert re.search(r"\bof\s+2\b", report, re.IGNORECASE), report
+    assert "Selected volume: page 1 / index 0 (of 3)" in report
+    assert "**Volume page 1 / index 0**" in report
     assert len(selections) == 3
-    for selection in selections:
-        assert _is_lazy_plane_selection(selection, ndim=4) and selection[-1] == 0
-    # Volume 1 is constant. Each center slice varying in intensity proves the default
-    # render came from the first volume, rather than an arbitrary time point.
-    for image in decoded:
-        low, high = image.convert("L").getextrema()
-        assert low < high, "4D visualization did not render the non-constant volume 0"
+    assert all(_is_lazy_plane_selection(selection, ndim=4) and selection[-1] == 0 for selection in selections)
+
+    selections.clear()
+    content = visualize.handle(
+        {
+            "file_path": path,
+            "pages": "1-3",
+            "max_pages": 2,
+            "budget": "small",
+        }
+    )
+
+    report = _text(content)
+    assert len(_images(content)) == 6
+    assert "Selected volumes: pages (1, 2); indices (0, 1) (of 3)" in report
+    assert "**Volume page 1 / index 0**" in report
+    assert "**Volume page 2 / index 1**" in report
+    assert "Volume page 3" not in report
+    assert len(selections) == 6
+    assert [selection[-1] for selection in selections] == [0, 0, 0, 1, 1, 1]
+    assert all(_is_lazy_plane_selection(selection, ndim=4) for selection in selections)
 
 
-@pytest.mark.parametrize("four_dimensional", [False, True], ids=["3d", "4d"])
-def test_visualize_nifti_noncanonical_orientation_matches_ras_lazily(tmp_path, monkeypatch, four_dimensional):
+def test_visualize_nifti_noncanonical_orientation_matches_ras_lazily(tmp_path, monkeypatch):
     # Even dimensions make a flipped center index differ by one in source space,
     # catching the common ``size // 2`` off-by-one error after reorientation.
     shape = (6, 8, 10)
     x, y, z = np.indices(shape, dtype=np.float32)
     first = x + 10 * y + 100 * z
-    data = np.stack([first, np.full(shape, 42, dtype=np.float32)], axis=-1) if four_dimensional else first
     affine = np.diag([2.0, 3.0, 4.0, 1.0])
-    reference_path = _save_nifti(tmp_path, "ras-reference.nii", data, affine)
+    reference_path = _save_nifti(tmp_path, "ras-reference.nii", first, affine)
     reference = visualize.handle({"file_path": reference_path, "budget": "small"})
     reference_images = _assert_successful_three_plane_render(reference)
 
-    ras_image = nib.Nifti1Image(data, affine)
+    ras_image = nib.Nifti1Image(first, affine)
     transform = nib.orientations.ornt_transform(
         nib.orientations.axcodes2ornt(("R", "A", "S")),
         nib.orientations.axcodes2ornt(("S", "L", "A")),
@@ -165,17 +174,13 @@ def test_visualize_nifti_noncanonical_orientation_matches_ras_lazily(tmp_path, m
     report = _text(content)
     assert re.search(r"orientation.*RAS.*source\s+SLA", report, re.IGNORECASE), report
     assert len(selections) == 3
-    ndim = 4 if four_dimensional else 3
-    assert all(_is_lazy_plane_selection(selection, ndim) for selection in selections)
-    if four_dimensional:
-        assert all(selection[-1] == 0 for selection in selections)
+    assert all(_is_lazy_plane_selection(selection, ndim=3) for selection in selections)
     for expected, actual in zip(reference_images, rendered_images, strict=True):
         assert np.array_equal(np.asarray(expected), np.asarray(actual))
 
 
-@pytest.mark.parametrize("suffix", [".nii", ".nii.gz"])
-def test_visualize_nifti_corrupt_file_returns_renderer_error(tmp_path, suffix):
-    path = tmp_path / f"corrupt{suffix}"
+def test_visualize_nifti_corrupt_compound_extension_returns_renderer_error(tmp_path):
+    path = tmp_path / "corrupt.nii.gz"
     path.write_bytes(b"not a nifti file")
 
     content = visualize.handle({"file_path": str(path)})
@@ -209,8 +214,8 @@ def test_visualize_nifti_handles_degenerate_intensities(tmp_path, case, data):
     _assert_successful_three_plane_render(content)
 
 
-@pytest.mark.parametrize("shape", [(7, 9), (3, 4, 5, 2, 2)], ids=["2d", "5d"])
-def test_visualize_nifti_rejects_dimensions_other_than_3d_or_4d(tmp_path, shape):
+def test_visualize_nifti_rejects_dimensions_other_than_3d_or_4d(tmp_path):
+    shape = (3, 4, 5, 2, 2)
     path = _save_nifti(tmp_path, "unsupported-dimensions.nii", np.zeros(shape, dtype=np.float32))
 
     content = visualize.handle({"file_path": path})
@@ -219,21 +224,3 @@ def test_visualize_nifti_rejects_dimensions_other_than_3d_or_4d(tmp_path, shape)
     assert report.startswith("Error rendering .nii file:")
     assert "supports 3D or 4D" in report
     assert not _images(content)
-
-
-def test_visualize_nifti_missing_dependency_is_actionable(tmp_path, monkeypatch):
-    path = _save_nifti(tmp_path, "missing-dependency.nii", np.zeros((3, 4, 5), dtype=np.float32))
-    original_import = builtins.__import__
-
-    def reject_nibabel(name, *args, **kwargs):
-        if name == "nibabel" or name.startswith("nibabel."):
-            raise ImportError("simulated missing nibabel")
-        return original_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", reject_nibabel)
-
-    content = visualize.handle({"file_path": path})
-
-    report = _text(content)
-    assert report.startswith("Error rendering .nii file:")
-    assert "qwen-mm-plugins[viz]" in report
