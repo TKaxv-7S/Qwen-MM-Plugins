@@ -1,11 +1,11 @@
 ---
 name: qwen-mm-plugins-core
-description: Local MCP tools to read and visualize any file — images, video, documents, code, data, 3D, notebooks, and more — plus image tools for cropping, annotating, and extracting frames.
+description: Local MCP tools to read and visualize any file — images, video, documents, code, data, 3D, NIfTI, notebooks, and more — plus image tools for cropping, annotating, and extracting frames.
 ---
 
 # Qwen-MM-Plugins Core
 
-You have `qwen-mm-plugins-core` MCP tools available. Use them to read and visualize any file (images, videos, documents, code, data, 3D models, notebooks, etc.) and to crop/annotate images. Prefer these MCP tools over manual scripting.
+You have `qwen-mm-plugins-core` MCP tools available. Use them to read and visualize any file (images, videos, documents, code, data, 3D models, NIfTI volumes, notebooks, etc.) and to crop/annotate images. Prefer these MCP tools over manual scripting.
 
 Check the `qwen-mm-plugins-core` tools in your tool list for full schemas and parameters.
 
@@ -35,12 +35,16 @@ Producing / annotating (writes an image file):
 | Diagrams | `.drawio` | XML → SVG rendering |
 | Subtitles | `.srt`, `.vtt` | Returns text |
 | 3D Models | `.obj`, `.stl`, `.glb`, `.gltf`, `.fbx`, `.ply`, `.step`, `.stp` | Built-in; `blender` for best quality |
+| Medical volumes | `.nii`, `.nii.gz` | Local/read-only (`nibabel`); 3 center slices; 4D `pages` selects volumes (default 1) |
 | GIS/Geo | `.geojson`, `.kml`, `.shp` | Built-in |
 | Notebooks | `.ipynb` | Text cells + embedded images |
 | LaTeX | `.tex` | Compiles to PDF; falls back to source on failure |
 | Images/Videos | `.jpg`, `.mp4`, ... | Delegates to `read_image`/`read_video` |
 
 Use `pages` for page ranges, `budget` for resolution, `max_pages` to cap output.
+
+NIfTI uses closest-canonical voxel axes without resampling and is intended for inspection, not
+clinical diagnosis.
 
 ## Metadata First
 
