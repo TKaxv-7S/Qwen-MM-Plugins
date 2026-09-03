@@ -59,6 +59,7 @@ def test_config_spec_mirrors_shared_catalog():
         "Search providers": "search",
         "Runtime paths & limits": "runtime",
         "Video-memory": "memory",
+        "Omni-memory": "omni",
         "OSS storage (serve large media by URL)": "oss",
         "Blender / FreeCAD hosts": "hosts",
         "edu-agent (Node / headless Chromium)": "edu",
@@ -558,7 +559,7 @@ def test_capability_rows_never_wrap_at_narrow_terminal_widths(width):
     result = _bash(f"term_cols() {{ printf {width}; }}; load_caps core; _multi_rows 0")
     assert result.returncode == 0, result.stderr
     lines = [line.replace("\x1b[2K", "") for line in result.stdout.splitlines()]
-    assert len(lines) == 8
+    assert len(lines) == 9
     assert all(len(line) < width for line in lines), result.stdout
 
 

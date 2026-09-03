@@ -175,7 +175,7 @@ CONFIG_FIELDS: list[tuple[str, bool, str, str, str]] = [
         False,
         "Media APIs & endpoints",
         "qwen3.5-omni-plus",
-        "default Omni model for audio/video understanding tools",
+        "default Omni model for audio/video understanding tools and omni-memory",
     ),
     ("SAM3_SERVER_URL", False, "Media APIs & endpoints", "", "segmentation SAM3 server URL"),
     ("ASR_SERVER_URLS", False, "Media APIs & endpoints", "", "self-hosted ASR fallback URLs (comma-separated)"),
@@ -237,6 +237,17 @@ CONFIG_FIELDS: list[tuple[str, bool, str, str, str]] = [
     ("GRAPH_MEMORY_PATH", False, "Video-memory", "", "graph_memory.json path (overrides a passed video path)"),
     ("EMBEDDINGS_PATH", False, "Video-memory", "", "embeddings.npz path"),
     ("CUTOFF_SEC", False, "Video-memory", "", "time cutoff (seconds) for retrieval"),
+    # Omni-memory location. Its endpoint, key, and model use the shared DASHSCOPE_BASE_URL,
+    # DASHSCOPE_API_KEY, and QWEN_MM_API_OMNI_MODEL fields above. Retrieval and encoder internals
+    # are tunable through further MEM_* variables that are deliberately not catalogued here; see
+    # the capability's own SKILL.md.
+    (
+        "MEM_LOCAL_DIR",
+        False,
+        "Omni-memory",
+        "video directory",
+        "optional shared root for namespace memories; defaults beside the input video",
+    ),
     # Blender / FreeCAD hosts
     ("BLENDER_BINARY", False, "Blender / FreeCAD hosts", "", "path to the Blender executable"),
     ("BLENDER_HOST", False, "Blender / FreeCAD hosts", "localhost", "Blender addon host"),
